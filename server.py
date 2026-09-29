@@ -6,7 +6,7 @@ import uvicorn
 from fastapi import FastAPI, Request, Query, Response
 from google import genai
 from google.genai import types
-from pyngrok import ngrok
+#from pyngrok import ngrok
 from apscheduler.schedulers.background import BackgroundScheduler
 
 app = FastAPI()
@@ -275,14 +275,4 @@ def test_checkin():
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    # Si estamos en tu compu (local), abre ngrok para pruebas
-    if not os.environ.get("RENDER"):
-        try:
-            from pyngrok import ngrok
-            public_url = ngrok.connect(port).public_url
-            print("\n" + "=" * 50)
-            print(f"🚀 URL PÚBLICA LOCAL:\n{public_url}/webhook")
-            print("=" * 50 + "\n")
-        except Exception:
-            pass
     uvicorn.run(app, host="0.0.0.0", port=port)
