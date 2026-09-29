@@ -1,7 +1,5 @@
-Set-Content requirements.txt @"
 fastapi
 uvicorn
 requests
 google-genai
 apscheduler
-"@
