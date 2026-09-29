@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+tutor_memory.db
+.env
