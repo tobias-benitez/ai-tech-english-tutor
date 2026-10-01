@@ -159,7 +159,7 @@ FORMATO OBLIGATORIO (Usá exactamente estos 3 bloques):
 
 Sé sintético, directo y profesional. Cero introducciones vacías.
 """
-    res = ai_client.models.generate_content(model="gemini-2.5-flash-lite", contents=prompt)
+    res = ai_client.models.generate_content(model="gemini-3.5-flash-lite", contents=prompt)
     lesson_text = res.text.strip()
     save_message(user_phone, "tutor", lesson_text)
     update_user(user_phone, state="lesson_active")
@@ -306,7 +306,7 @@ DIRECTIVAS PEDAGÓGICAS ESTRICTAS:
 Mantené las negritas de WhatsApp (*texto*) y no uses títulos Markdown con almohadillas (#).
 """
     response_ai = ai_client.models.generate_content(
-        model="gemini-2.5-flash-lite",
+        model="gemini-3.5-flash-lite",
         contents=prompt_eval
     )
     feedback_text = response_ai.text.strip()
@@ -364,7 +364,7 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
             audio_id = message["audio"]["id"]
             audio_bytes = download_whatsapp_media(audio_id)
             transcribe_res = ai_client.models.generate_content(
-                model="gemini-2.5-flash-lite",
+                model="gemini-3.5-flash-lite",
                 contents=[
                     types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
                     "Transcribe the English speech verbatim. Output ONLY the transcription."
