@@ -12,10 +12,14 @@ app = FastAPI(title="AI Technical English Tutor - Multi-Tenant")
 # --- Configuración y Credenciales ---
 META_TOKEN = os.environ.get("META_TOKEN", "")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1261888910352307")
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
+GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "english_tutor_secret_2026")
 
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+if not GEMINI_API_KEY:
+    print("⚠️ ADVERTENCIA: La variable GEMINI_API_KEY está vacía o no existe en el entorno.")
+
+# Inicialización segura: si no hay key, se pasa None para evitar fallback erróneo a OAuth2
+ai_client = genai.Client(api_key=GEMINI_API_KEY or None)
 
 # --- Capa de Persistencia y Multi-Tenancy (SQLite) ---
 def get_db():
@@ -156,14 +160,14 @@ FORMATO OBLIGATORIO (Usá exactamente estos 3 bloques):
 
 Sé sintético, directo y profesional. Cero introducciones vacías.
 """
-    res = ai_client.models.generate_content(model="gemini-3.5-flash-lite", contents=prompt)
+    res = ai_client.models.generate_content(model="gemini-2.5-flash", contents=prompt)
     lesson_text = res.text.strip()
     save_message(user_phone, "tutor", lesson_text)
     update_user(user_phone, state="lesson_active")
     send_whatsapp(user_phone, lesson_text)
 
 def broadcast_morning_checkin():
-    """Ejecutado por CronJob para todos los usuarios registrados"""
+    """Ejecutado por Scheduler o llamado vía endpoint para todos los usuarios"""
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT phone, level, focus FROM users")
@@ -303,7 +307,7 @@ DIRECTIVAS PEDAGÓGICAS ESTRICTAS:
 Mantené las negritas de WhatsApp (*texto*) y no uses títulos Markdown con almohadillas (#).
 """
     response_ai = ai_client.models.generate_content(
-        model="gemini-3.5-flash-lite",
+        model="gemini-2.5-flash",
         contents=prompt_eval
     )
     feedback_text = response_ai.text.strip()
@@ -313,6 +317,10 @@ Mantené las negritas de WhatsApp (*texto*) y no uses títulos Markdown con almo
     send_whatsapp(recipient_phone, feedback_text)
 
 # --- Endpoints de la Aplicación ---
+@app.get("/")
+def root():
+    return {"status": "ok", "service": "AI Technical English Tutor"}
+
 @app.get("/webhook")
 def verify_webhook(
     hub_mode: str = Query(None, alias="hub.mode"),
@@ -342,7 +350,6 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
             return {"status": "duplicate"}
 
         raw_phone = message.get("from", "")
-        # Normalización de prefijos internacionales de WhatsApp
         if raw_phone.startswith("54911"):
             recipient_phone = "5411" + raw_phone[5:]
         else:
@@ -358,7 +365,7 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
             audio_id = message["audio"]["id"]
             audio_bytes = download_whatsapp_media(audio_id)
             transcribe_res = ai_client.models.generate_content(
-                model="gemini-3.5-flash-lite",
+                model="gemini-2.5-flash",
                 contents=[
                     types.Part.from_bytes(data=audio_bytes, mime_type="audio/ogg"),
                     "Transcribe the English speech verbatim. Output ONLY the transcription."
