@@ -381,11 +381,10 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
     return {"status": "ok"}
 
 @app.get("/test/checkin")
-def test_checkin():
-    broadcast_morning_checkin()
-    return {"status": "Check-in matutino ejecutado a todos los usuarios"}
+async def test_checkin(background_tasks: BackgroundTasks):
+    background_tasks.add_task(broadcast_morning_checkin)
+    return {"status": "ok"}
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
     uvicorn.run(app, host="0.0.0.0", port=port)
-
