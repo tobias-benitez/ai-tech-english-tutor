@@ -5,7 +5,6 @@ import uvicorn
 from fastapi import FastAPI, Request, Query, Response, BackgroundTasks
 from google import genai
 from google.genai import types
-from apscheduler.schedulers.background import BackgroundScheduler
 
 app = FastAPI(title="AI Technical English Tutor - Multi-Tenant")
 
@@ -14,6 +13,7 @@ META_TOKEN = os.environ.get("META_TOKEN", "")
 PHONE_NUMBER_ID = os.environ.get("PHONE_NUMBER_ID", "1261888910352307")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 VERIFY_TOKEN = os.environ.get("VERIFY_TOKEN", "english_tutor_secret_2026")
+DEFAULT_STUDENT_PHONE = os.environ.get("DEFAULT_STUDENT_PHONE", "541123588856")
 
 if not GEMINI_API_KEY:
     print("⚠️ ADVERTENCIA: La variable GEMINI_API_KEY está vacía o no existe en el entorno.")
@@ -48,6 +48,14 @@ def init_db():
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     FOREIGN KEY(user_phone) REFERENCES users(phone)
                 )''')
+    c.execute('''CREATE TABLE IF NOT EXISTS lesson_history (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_phone TEXT,
+                    lesson_summary TEXT,
+                    delivered_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )''')
+    # Oñemoĩ seguro nde número Render omboguejeýramo jepe la base
+    c.execute("INSERT OR IGNORE INTO users (phone, level, focus, state) VALUES (?, 'B1', 'Fullstack / General IT', 'idle')", (DEFAULT_STUDENT_PHONE,))
     conn.commit()
     conn.close()
 
@@ -104,8 +112,32 @@ def get_recent_history(user_phone: str, limit: int = 4):
     conn.close()
     return "\n".join([f"{r['role'].upper()}: {r['content']}" for r in reversed(rows)])
 
+def get_past_lessons_summary(user_phone: str, limit: int = 8):
+    conn = get_db()
+    c = conn.cursor()
+    c.execute("SELECT lesson_summary FROM lesson_history WHERE user_phone = ? ORDER BY id DESC LIMIT ?", (user_phone, limit))
+    rows = c.fetchall()
+    conn.close()
+    if not rows:
+        return "No hay temas previos registrados."
+    return "\n".join([f"- {r['lesson_summary']}" for r in rows])
+
+def save_lesson_topic(user_phone: str, lesson_text: str):
+    conn = get_db()
+    c = conn.cursor()
+    summary = lesson_text[:140].replace("\n", " ").strip()
+    c.execute("INSERT INTO lesson_history (user_phone, lesson_summary) VALUES (?, ?)", (user_phone, summary))
+    conn.commit()
+    conn.close()
+
 # --- Cliente Meta WhatsApp API ---
 def send_whatsapp(recipient: str, text: str):
+    clean = "".join(filter(str.isdigit, recipient))
+    if clean.startswith("54911"):
+        clean = "5411" + clean[5:]
+    elif clean.startswith("549") and len(clean) == 13:
+        clean = "54" + clean[3:]
+
     url = f"https://graph.facebook.com/v22.0/{PHONE_NUMBER_ID}/messages"
     headers = {
         "Authorization": f"Bearer {META_TOKEN}",
@@ -114,12 +146,12 @@ def send_whatsapp(recipient: str, text: str):
     payload = {
         "messaging_product": "whatsapp",
         "recipient_type": "individual",
-        "to": recipient,
+        "to": clean,
         "type": "text",
         "text": {"preview_url": False, "body": text}
     }
     res = requests.post(url, headers=headers, json=payload)
-    print(f"📤 Meta Send to {recipient} ({res.status_code}): {res.text}")
+    print(f"📤 Meta Send to {clean} ({res.status_code}): {res.text}")
     return res
 
 def download_whatsapp_media(media_id: str) -> bytes:
@@ -134,12 +166,20 @@ def download_whatsapp_media(media_id: str) -> bytes:
 def deliver_daily_lesson(user_phone: str, user_profile: dict):
     level = user_profile.get("level", "B1")
     focus = user_profile.get("focus", "Fullstack / General IT")
+    past_topics = get_past_lessons_summary(user_phone, limit=8)
 
     prompt = f"""
 Sos un Staff Software Engineer y mentor bilingüe especializado en inglés técnico para la industria de software.
-Generá la micro-lección diaria personalizada para este estudiante:
+Generá una NUEVA micro-lección diaria personalizada para este estudiante:
 - Nivel objetivo: {level}
 - Especialidad / Foco: {focus}
+
+TEMAS YA ENSEÑADOS (PROHIBIDO REPETIR O USAR LOS MISMOS EJEMPLOS):
+{past_topics}
+
+REGLA DE VARIEDAD:
+- Si en las clases anteriores ya usaste 'blocker', 'push back' o 'touch base', seleccioná expresiones distintas (ej. 'circle back', 'trade-off', 'heads up', 'ballpark figure', 'gut feeling', 'scope creep').
+- El término técnico debe ser específico y novedoso dentro de {focus}.
 
 APLICÁ EL MÉTODO DE INPUT COMPRENSIBLE (i+1):
 - Vocabulario y estructuras gramaticales desafiantes pero alcanzables para nivel {level}.
@@ -147,7 +187,7 @@ APLICÁ EL MÉTODO DE INPUT COMPRENSIBLE (i+1):
 
 FORMATO OBLIGATORIO (Usá exactamente estos 3 bloques):
 📌 *IDIOM / EXPRESSION (Natural Workplace):*
-- Una frase de uso diario en startups/tech (ej. "push back", "blocker", "touch base", "on the fence").
+- Una frase de uso diario en startups/tech.
 - Breve significado en español y 1 ejemplo claro.
 
 💻 *TECHNICAL TERM ({focus}):*
@@ -159,35 +199,49 @@ FORMATO OBLIGATORIO (Usá exactamente estos 3 bloques):
 
 Sé sintético, directo y profesional. Cero introducciones vacías.
 """
-    res = ai_client.models.generate_content(model="gemini-3.5-flash-lite", contents=prompt)
+    config = types.GenerateContentConfig(
+        temperature=0.85
+    )
+    res = ai_client.models.generate_content(
+        model="gemini-3.5-flash-lite",
+        contents=prompt,
+        config=config
+    )
     lesson_text = res.text.strip()
     save_message(user_phone, "tutor", lesson_text)
+    save_lesson_topic(user_phone, lesson_text)
     update_user(user_phone, state="lesson_active")
     send_whatsapp(user_phone, lesson_text)
 
 def broadcast_morning_checkin():
-    """Ejecutado por Scheduler o llamado vía endpoint para todos los usuarios"""
+    """Ejecutado por Cron externo para todos los usuarios"""
     conn = get_db()
     c = conn.cursor()
     c.execute("SELECT phone, level, focus FROM users")
     users = c.fetchall()
     conn.close()
 
-    for u in users:
+    target_users = []
+    if users:
+        for u in users:
+            target_users.append(dict(u))
+    else:
+        target_users.append({
+            "phone": DEFAULT_STUDENT_PHONE,
+            "level": "B1",
+            "focus": "Fullstack / General IT"
+        })
+
+    for u in target_users:
         phone = u["phone"]
         update_user(phone, state="waiting_start")
         msg = (
             f"¡Buen día! ☀️ Hora de afilar tu inglés técnico.\n"
-            f"Nivel actual: *{u['level']}* | Foco: *{u['focus']}*\n\n"
+            f"Nivel actual: *{u.get('level', 'B1')}* | Foco: *{u.get('focus', 'Fullstack / General IT')}*\n\n"
             f"¿Arrancamos la práctica de hoy? Respondé *start* (o mandá un audio) y te paso el reto."
         )
         save_message(phone, "tutor", msg)
         send_whatsapp(phone, msg)
-
-# --- Scheduler de Respaldo Local ---
-scheduler = BackgroundScheduler(timezone="America/Argentina/Buenos_Aires")
-scheduler.add_job(broadcast_morning_checkin, "cron", hour=9, minute=0, day_of_week="mon-fri")
-scheduler.start()
 
 # --- Manejador de Comandos del Sistema ---
 def handle_command(command_text: str, user: dict) -> str:
@@ -233,7 +287,7 @@ def handle_command(command_text: str, user: dict) -> str:
         deliver_daily_lesson(phone, user)
         return ""
 
-    return "⚠️ Comando no reconocido. Escribí */help* para ver las opciones."
+    return "⚠️️ Comando no reconocido. Escribí */help* para ver las opciones."
 
 # --- Tarea en Segundo Plano para Procesar Mensajes ---
 def process_incoming_message(recipient_phone: str, user_content: str, is_audio: bool):
@@ -351,6 +405,8 @@ async def receive_message(request: Request, background_tasks: BackgroundTasks):
         raw_phone = message.get("from", "")
         if raw_phone.startswith("54911"):
             recipient_phone = "5411" + raw_phone[5:]
+        elif raw_phone.startswith("549") and len(raw_phone) == 13:
+            recipient_phone = "54" + raw_phone[3:]
         else:
             recipient_phone = raw_phone
 
